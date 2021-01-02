@@ -11,6 +11,244 @@ def shelf_distance(shelf_a, shelf_b):
     shelf_b_arr = np.array(list(map(int, shelf_b.split('_'))))
     return spatial.distance.cityblock(shelf_a_arr, shelf_b_arr)
 
+def eye_transitions_execution(grp, valid_objs=[], shelf_locs=[], offset=0,):
+
+    grp_cols = ['subject_id', 'trial_num', 'trial_type',]
+    sample_df, name = grp
+    # print(sample_df.subject_id, sample_df.trial_num)
+    sample_df = sample_df.sort_values(by='timestamp_dt')
+    sample_df.loc[sample_df.eye_hit == 'Other',
+        ['eye_hit']] = sample_df.query('eye_hit == "Other"').eye_shelf_hit
+
+    grasp_times = (
+        sample_df.query('grasp_onset_bool == 1')
+        [['pickup_location', 'grasp', 'timestamp_dt']]
+        .rename(columns=dict(
+            timestamp_dt='on_time',
+            pickup_location='on_loc',
+            grasp='current_TO',
+        ))
+    )
+    grasp_times['current_off_time'] = sample_df.query('grasp_end_bool == 1').timestamp_dt.values
+    grasp_times['current_TS'] = sample_df.query('grasp_end_bool == 1').drop_location.values
+    grasp_times = grasp_times.sort_values(by='on_time').reset_index(drop=True)
+
+    grasp_times = grasp_times.drop_duplicates(subset = ['on_loc', 'current_TS', 'current_TO'], keep='first')
+
+    grasp_times = grasp_times.query('on_loc != current_TS')
+
+    grasp_times['prev_off_time'] = grasp_times['current_off_time'].shift(1)
+    grasp_times['next_on_time'] = grasp_times['on_time'].shift(-1)
+
+    grasp_times['prev_TO'] = grasp_times['current_TO'].shift(1)
+    grasp_times['next_TO'] = grasp_times['current_TO'].shift(-1)
+
+    grasp_times['prev_TS'] = grasp_times['current_TS'].shift(1)
+    grasp_times['next_TS'] = grasp_times['current_TS'].shift(-1)
+
+    grasp_times['prev_on_loc'] = grasp_times['on_loc'].shift(1)
+    grasp_times['next_on_loc'] = grasp_times['on_loc'].shift(-1)
+
+    grasp_times = grasp_times.dropna(subset=['prev_TO', 'prev_TS', 'next_TO', 'next_TS'])
+
+    offset = pd.Timedelta(offset, 's')
+
+    windows_df = pd.concat(
+        grasp_times
+        .apply(
+            lambda row: (
+                sample_df.loc[
+                # filter timestamps between window based on offsets
+                    sample_df.timestamp_dt.between(
+                        row.on_time - offset, row.current_off_time + offset
+                    ),
+                    # columns from sample_df required for each epoch
+                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'obj_fix_dur']
+                ]
+                .pipe(
+                    lambda df: df.assign(
+                        fix_type=df.eye_hit.apply(
+                            lambda s: (
+                                np.nan if pd.isnull(s)
+
+                                else 'prev_TO' if s == row.prev_TO or s == row.prev_on_loc
+
+                                else 'current_TO' if s == row.current_TO or s == row.on_loc
+
+                                else 'next_TO' if s == row.next_TO or s == row.next_on_loc
+
+                                else 'prev_TS' if s == row.prev_TS
+
+                                else 'current_TS' if s == row.current_TS
+
+                                else 'next_TS' if s == row.next_TS
+
+                                else 'other'
+                                if (s != row.current_TS
+                                    and s != row.prev_TS
+                                    and s != row.next_TS
+                                    and s != row.on_loc
+                                    and s != row.prev_on_loc
+                                    and s != row.next_on_loc
+                                    and s in shelf_locs
+                                ) or (
+                                    s != row.current_TO
+                                    and s != row.prev_TO
+                                    and s != row.next_TO
+                                    and s in valid_objs
+                                )
+
+                                else np.nan
+                                )
+                        ),
+
+                        time_on_grasp = df.timestamp_dt.apply(
+                            lambda t: (t - row.on_time)/(row.current_off_time - row.on_time) #)/np.timedelta64(1, 's')
+                        ),
+
+                        # grasp count in the trial
+                        grasp_num=row.name,
+                        subject_id=name[0],
+                        trial_num=name[1],
+                        trial_type=name[2]
+                    )
+                )
+            ),
+            axis=1
+        )
+        .values
+    ).set_index(grp_cols)
+
+    return windows_df
+
+def eye_transitions_planning(grp, valid_objs = [], shelf_locs = [], offset=0, ):
+
+    grp_cols = ['subject_id', 'trial_num', 'trial_type',]
+    sample_df, name = grp
+
+    # print(name[0], name[1])
+    # print(sample_df.subject_id, sample_df.trial_num)
+    sample_df = sample_df.sort_values(by='timestamp_dt')
+    sample_df.loc[sample_df.eye_hit == 'Other',
+        ['eye_hit']] = sample_df.query('eye_hit == "Other"').eye_shelf_hit
+
+    grasp_times = (
+        sample_df.query('grasp_onset_bool == 1')
+        [['pickup_location', 'grasp', 'timestamp_dt']]
+        .rename(columns=dict(
+            timestamp_dt='on_time',
+            pickup_location='on_loc',
+            grasp='current_TO',
+        ))
+    )
+    grasp_times['current_off_time'] = sample_df.query('grasp_end_bool == 1').timestamp_dt.values
+    grasp_times['current_TS'] = sample_df.query('grasp_end_bool == 1').drop_location.values
+    grasp_times = grasp_times.sort_values(by='on_time').reset_index(drop=True)
+
+    grasp_times = grasp_times.drop_duplicates(subset = ['on_loc', 'current_TS', 'current_TO'], keep='first')
+
+    grasp_times = grasp_times.query('on_loc != current_TS')
+
+    grasp_times['prev_off_time'] = grasp_times['current_off_time'].shift(1)
+    grasp_times['next_on_time'] = grasp_times['on_time'].shift(-1)
+
+    grasp_times['prev_TO'] = grasp_times['current_TO'].shift(1)
+    grasp_times['next_TO'] = grasp_times['current_TO'].shift(-1)
+
+    grasp_times['prev_TS'] = grasp_times['current_TS'].shift(1)
+    grasp_times['next_TS'] = grasp_times['current_TS'].shift(-1)
+
+    grasp_times['prev_on_loc'] = grasp_times['on_loc'].shift(1)
+    grasp_times['next_on_loc'] = grasp_times['on_loc'].shift(-1)
+
+    grasp_times = grasp_times.dropna(subset=['prev_TO', 'prev_TS', 'next_TO', 'next_TS'])
+
+    # print(grasp_times.shape)
+
+    offset = pd.Timedelta(offset, 's')
+
+    windows_df = pd.concat(
+        grasp_times
+        .apply(
+            lambda row: (
+                sample_df.loc[
+                # filter timestamps between window based on offsets
+                    sample_df.timestamp_dt.between(
+                        row.prev_off_time + offset, row.on_time
+                    ),
+                    # columns from sample_df required for each epoch
+                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'obj_fix_dur']
+                ]
+                .pipe(
+                    lambda df: df.assign(
+                        fix_type = df.eye_hit.apply(
+                            lambda s: (
+                                np.nan if pd.isnull(s)
+
+                                else 'prev_TO' if s == row.prev_TO or s == row.prev_on_loc
+
+                                else 'current_TO' if s == row.current_TO or s == row.on_loc
+
+                                else 'next_TO' if s == row.next_TO or s == row.next_on_loc
+
+                                else 'prev_TS' if s == row.prev_TS
+
+                                else 'current_TS' if s == row.current_TS
+
+                                else 'next_TS' if s == row.next_TS
+
+                                # else 'same_feature'
+                                # if ( s in valid_objs
+                                #     and (s.split('_')[0] == row.prev_TO.split('_')[0]
+                                #     or s.split('_')[1] == row.prev_TO.split('_')[1]
+                                #     )
+                                # )
+
+                                else 'other'
+                                if (s != row.current_TS
+                                    and s != row.prev_TS
+                                    and s != row.next_TS
+                                    and s != row.on_loc
+                                    and s != row.prev_on_loc
+                                    and s != row.next_on_loc
+                                    and s in shelf_locs
+                                ) or (
+                                    s != row.current_TO
+                                    and s != row.prev_TO
+                                    and s != row.next_TO
+                                    and s in valid_objs
+                                )
+
+                                else np.nan
+                            )
+                        ),
+
+                        time_on_grasp = df.timestamp_dt.apply(
+                            lambda t: (t - row.on_time)/np.timedelta64(1, 's')
+                        ),
+
+                        time_off_grasp = df.timestamp_dt.apply(
+                            lambda t: (t - row.prev_off_time)/(row.on_time - row.prev_off_time ) #)/np.timedelta64(1, 's')
+                        ),
+
+                        # grasp count in the trial
+                        grasp_num=row.name,
+                        grasp_onset=row.on_time,
+                        subject_id=name[0],
+                        trial_num=name[1],
+                        trial_type=name[2],
+                    )
+                )
+            ),
+            axis=1
+        )
+        .values
+    ).set_index(grp_cols)
+
+    print(windows_df.shape)
+    return windows_df
+
+
 
 def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
     grp_cols = ['subject_id', 'trial_num', 'trial_type', 'grasp_num']
@@ -30,6 +268,9 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
     grasp_times['off_loc'] = sample_df.query('grasp_end_bool == 1').drop_location.values
     grasp_times = grasp_times.sort_values(by='on_time').reset_index(drop=True)
 
+    grasp_times = grasp_times.drop_duplicates(subset = ['on_loc', 'off_loc', 'grasp_object'])
+    grasp_times = grasp_times.query('on_loc != off_loc')
+
     offset_start_pd = pd.Timedelta(offset_start, 's')
     offset_stop_pd = pd.Timedelta(offset_stop, 's')
     windows_df = pd.concat(
@@ -43,8 +284,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                     ),
 
                     # columns from sample_df required for each epoch
-                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit',
-                     'eye_shelf_hit',]
+                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'eye_shelf_hit',]
                 ]
                 .pipe(lambda df: df.assign(
 
@@ -54,7 +294,8 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                     target_object_fix=df.eye_hit.apply(
                         lambda s: (
                             np.nan if s == 'Other'
-                            else s == row.grasp_object if not pd.isnull(s)
+                            else s == row.grasp_object
+                            if not pd.isnull(s)
                             else np.nan
                             )
                     ),
@@ -65,7 +306,8 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                     # fixation is on the target shelf where the grasped object is placed
                     target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
                         lambda s_row: (
-                            np.nan if s_row.eye_hit != 'Other' and not pd.isnull(s_row.eye_hit)
+                            np.nan if s_row.eye_hit != 'Other'
+                            and not pd.isnull(s_row.eye_hit)
                             else s_row.eye_shelf_hit == row.off_loc
                             if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
                             else np.nan
@@ -86,35 +328,40 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
 
                     non_target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
                         lambda s_row: (
-                            np.nan if s_row.eye_hit != 'Other' and not pd.isnull(s_row.eye_hit)
+                            np.nan
+                            if s_row.eye_hit != 'Other'
+                            and not pd.isnull(s_row.eye_hit)
                             else s_row.eye_shelf_hit != row.off_loc
-                            if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
+                            if not pd.isnull(s_row.eye_shelf_hit)
+                            and not pd.isnull(s_row.eye_hit)
+                            and s_row.eye_shelf_hit != row.on_loc
                             else np.nan
                         ),
                         axis=1
                     ),
 
-                    non_target_object_same_color=df.eye_hit.apply(
-                        lambda s: (
-                            np.nan if s == 'Other' and not pd.isnull(s)
-                            else s.split('_')[1] == row.grasp_object.split('_')[1]
-                            if s != row.grasp_object and not pd.isnull(s)
-                            else False
-                            if s == row.grasp_object and not pd.isnull(s)
-                            else np.nan
-                        )
-                    ),
-
-                    non_target_object_same_shape=df.eye_hit.apply(
-                        lambda s: (
-                            np.nan if s == 'Other' and not pd.isnull(s)
-                            else s.split('_')[0] == row.grasp_object.split('_')[0]
-                            if s != row.grasp_object and not pd.isnull(s)
-                            else False
-                            if s == row.grasp_object and not pd.isnull(s)
-                            else np.nan
-                        )
-                    ),
+                    # non_target_object_same_color=df.eye_hit.apply(
+                    #     lambda s: (
+                    #         np.nan if s == 'Other'
+                    #         and not pd.isnull(s)
+                    #         else s.split('_')[1] == row.grasp_object.split('_')[1]
+                    #         if s != row.grasp_object and not pd.isnull(s)
+                    #         else False
+                    #         if s == row.grasp_object and not pd.isnull(s)
+                    #         else np.nan
+                    #     )
+                    # ),
+                    #
+                    # non_target_object_same_shape=df.eye_hit.apply(
+                    #     lambda s: (
+                    #         np.nan if s == 'Other' and not pd.isnull(s)
+                    #         else s.split('_')[0] == row.grasp_object.split('_')[0]
+                    #         if s != row.grasp_object and not pd.isnull(s)
+                    #         else False
+                    #         if s == row.grasp_object and not pd.isnull(s)
+                    #         else np.nan
+                    #     )
+                    # ),
 
                     # grasp count in the trial
                     grasp_num=row.name,
@@ -122,6 +369,8 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
 
                     grasp_time=row.on_time,
                     drop_time=row.off_time,
+
+                    # is_fixation=row.is_fixation,
 
                     drop_location=row.off_loc,
                     pickup_location=row.on_loc,
@@ -161,7 +410,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
     return windows_df
 
 
-def get_avg_fixations(grp):
+def get_avg_fixations_time_binned(grp):
     grp_cols = ['subject_id', 'trial_num', 'trial_type', 'time_bin']
     grasp_df, name = grp
     fix_prop_df = (
@@ -171,8 +420,8 @@ def get_avg_fixations(grp):
             'target_object_fix': [np.nansum, 'size'],
             'target_shelf_fix': [np.nansum, 'size'],
             'non_target_object_fix': np.nansum,
-            'non_target_object_same_shape': np.nansum,
-            'non_target_object_same_color': np.nansum,
+            # 'non_target_object_same_shape': np.nansum,
+            # 'non_target_object_same_color': np.nansum,
             'non_target_shelf_fix': np.nansum,
             'proximity_pick': 'mean',
             'proximity_drop': 'mean',
@@ -182,8 +431,8 @@ def get_avg_fixations(grp):
         'target_object_fix_count', 'total_object_fix_count',
         'target_shelf_fix_count', 'total_shelf_fix_count',
         'non_target_object_fix_count',
-        'non_target_object_same_shape_count',
-        'non_target_object_same_color_count',
+        # 'non_target_object_same_shape_count',
+        # 'non_target_object_same_color_count',
         'non_target_shelf_fix_count',
         'proximity_pick',
         'proximity_drop',
@@ -200,23 +449,79 @@ def get_avg_fixations(grp):
     fix_prop_df['non_target_shelf_fix_prop'] = (
         fix_prop_df.non_target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
     )
-    fix_prop_df['non_target_object_same_feature_fix_prop'] = (
-        (fix_prop_df.non_target_object_same_shape_count
-        + fix_prop_df.non_target_object_same_color_count)
-        / fix_prop_df.total_object_fix_count
-    )
-    fix_prop_df['non_target_object_diff_feature_fix_prop'] = (
-        (fix_prop_df.non_target_object_fix_count
-        - fix_prop_df.non_target_object_same_shape_count
-        - fix_prop_df.non_target_object_same_color_count)
-        / fix_prop_df.total_object_fix_count
-    )
+    # fix_prop_df['non_target_object_same_feature_fix_prop'] = (
+    #     (fix_prop_df.non_target_object_same_shape_count
+    #     + fix_prop_df.non_target_object_same_color_count)
+    #     / fix_prop_df.total_object_fix_count
+    # )
+    # fix_prop_df['non_target_object_diff_feature_fix_prop'] = (
+    #     (fix_prop_df.non_target_object_fix_count
+    #     - fix_prop_df.non_target_object_same_shape_count
+    #     - fix_prop_df.non_target_object_same_color_count)
+    #     / fix_prop_df.total_object_fix_count
+    # )
     # fix_prop_df['non_target_object_same_color_fix_prop'] = (
     #     fix_prop_df.non_target_object_same_color_count / fix_prop_df.total_object_fix_count
     # )
 
     return fix_prop_df
 
+def get_avg_fixations_time_total(grp):
+    grp_cols = ['subject_id', 'trial_num', 'trial_type']
+    grasp_df, name = grp
+    fix_prop_df = (
+        grasp_df
+        .query('time_bin>=0 and time_bin<=2')
+        .groupby(grp_cols)
+        .agg({
+            'target_object_fix': [np.nansum, 'size'],
+            'target_shelf_fix': [np.nansum, 'size'],
+            'non_target_object_fix': np.nansum,
+            # 'non_target_object_same_shape': np.nansum,
+            # 'non_target_object_same_color': np.nansum,
+            'non_target_shelf_fix': np.nansum,
+            'proximity_pick': 'mean',
+            'proximity_drop': 'mean',
+        })
+    )
+    fix_prop_df.columns = [
+        'target_object_fix_count', 'total_object_fix_count',
+        'target_shelf_fix_count', 'total_shelf_fix_count',
+        'non_target_object_fix_count',
+        # 'non_target_object_same_shape_count',
+        # 'non_target_object_same_color_count',
+        'non_target_shelf_fix_count',
+        'proximity_pick',
+        'proximity_drop',
+    ]
+    fix_prop_df['target_object_fix_prop'] = (
+        fix_prop_df.target_object_fix_count / fix_prop_df.total_object_fix_count
+    )
+    fix_prop_df['target_shelf_fix_prop'] = (
+        fix_prop_df.target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
+    )
+    fix_prop_df['non_target_object_fix_prop'] = (
+        fix_prop_df.non_target_object_fix_count / fix_prop_df.total_object_fix_count
+    )
+    fix_prop_df['non_target_shelf_fix_prop'] = (
+        fix_prop_df.non_target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
+    )
+    # fix_prop_df['non_target_object_same_feature_fix_prop'] = (
+    #     (fix_prop_df.non_target_object_same_shape_count
+    #     + fix_prop_df.non_target_object_same_color_count)
+    #     / fix_prop_df.total_object_fix_count
+    # )
+    # fix_prop_df['non_target_object_diff_feature_fix_prop'] = (
+    #     (fix_prop_df.non_target_object_fix_count
+    #     - fix_prop_df.non_target_object_same_shape_count
+    #     - fix_prop_df.non_target_object_same_color_count)
+    #     / fix_prop_df.total_object_fix_count
+    # )
+    # fix_prop_df['non_target_object_same_color_fix_prop'] = (
+    #     fix_prop_df.non_target_object_same_color_count / fix_prop_df.total_object_fix_count
+    # )
+
+    return fix_prop_df
 
 def get_epoch_grasp_between(grp, offset_start=2, offset_stop=-2):
     grp_cols = ['subject_id', 'trial_num', 'trial_type', 'grasp_num']
@@ -490,9 +795,11 @@ def grasp_distance(grp):
                         grasp_interval_from_onset=(
                         df.next_grasp_time
                         - df.current_grasp_time) / np.timedelta64(1, 's'),
+
                         grasp_interval_off_on=(
                         df.next_grasp_time -
                         df.current_drop_time) / np.timedelta64(1, 's'),
+
                         subject_id=name[0],
                         trial_num=name[1],
                         trial_type=name[2]
@@ -503,3 +810,118 @@ def grasp_distance(grp):
     )
 
     return distance_df
+
+def get_fixations_between_pickup_dropoff(grp):
+    grp_cols = ['subject_id', 'trial_num', 'trial_type', 'grasp_num']
+    sample_df, name = grp
+    sample_df = sample_df.sort_values(by='timestamp_dt')
+
+    grasp_times = (
+        sample_df.query('grasp_onset_bool == 1')
+        [['pickup_location', 'grasp', 'timestamp_dt']]
+        .rename(columns=dict(
+            timestamp_dt='on_time',
+            pickup_location='on_loc',
+            grasp='grasp_object',
+        ))
+    )
+    grasp_times['off_time'] = sample_df.query('grasp_end_bool == 1').timestamp_dt.values
+    grasp_times['off_loc'] = sample_df.query('grasp_end_bool == 1').drop_location.values
+    grasp_times = grasp_times.sort_values(by='on_time').reset_index(drop=True)
+
+    windows_df = pd.concat(
+        grasp_times
+        .apply(
+            lambda row: (
+                sample_df.loc[
+                    # filter timestamps between window based on grasp on and off
+                    sample_df.timestamp_dt.between(row.on_time, row.off_time),
+                    # columns from sample_df required for each epoch
+                    ['trial_type', 'eye_hit', 'eye_shelf_hit',]
+                ]
+                .pipe(lambda df: df.assign(
+                    # count of fixations on target object
+                    target_object_fix=df.eye_hit.apply(
+                        lambda s: (
+                            np.nan if s == 'Other'
+                            else s == row.grasp_object if not pd.isnull(s)
+                            else np.nan
+                            )
+                    ),
+
+
+                    # whether fixation is on target shelf
+                    # when the fixation is on any object return np.nan else indicate if the
+                    # fixation is on the target shelf where the grasped object is placed
+                    target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                        lambda s_row: (
+                            np.nan if s_row.eye_hit != 'Other' and not pd.isnull(s_row.eye_hit)
+                            else s_row.eye_shelf_hit == row.off_loc
+                            if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
+                            else np.nan
+                            ),
+                        axis=1
+                    ),
+
+                    non_target_object_fix=df.eye_hit.apply(
+                        lambda s: (
+                            np.nan if s == 'Other'
+                            else s != row.grasp_object
+                            if s != row.grasp_object and not pd.isnull(s)
+                            else False
+                            if s == row.grasp_object and not pd.isnull(s)
+                            else np.nan
+                        )
+                    ),
+
+                    non_target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                        lambda s_row: (
+                            np.nan if s_row.eye_hit != 'Other' and not pd.isnull(s_row.eye_hit)
+                            else s_row.eye_shelf_hit != row.off_loc
+                            if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
+                            else np.nan
+                        ),
+                        axis=1
+                    ),
+
+                    non_target_object_same_color=df.eye_hit.apply(
+                        lambda s: (
+                            np.nan if s == 'Other' and not pd.isnull(s)
+                            else s.split('_')[1] == row.grasp_object.split('_')[1]
+                            if s != row.grasp_object and not pd.isnull(s)
+                            else False
+                            if s == row.grasp_object and not pd.isnull(s)
+                            else np.nan
+                        )
+                    ),
+
+                    non_target_object_same_shape=df.eye_hit.apply(
+                        lambda s: (
+                            np.nan if s == 'Other' and not pd.isnull(s)
+                            else s.split('_')[0] == row.grasp_object.split('_')[0]
+                            if s != row.grasp_object and not pd.isnull(s)
+                            else False
+                            if s == row.grasp_object and not pd.isnull(s)
+                            else np.nan
+                        )
+                    ),
+
+                    # grasp count in the trial
+                    grasp_num=row.name,
+                    grasp_object=row.grasp_object,
+
+                    grasp_time=row.on_time,
+                    drop_time=row.off_time,
+
+                    drop_location=row.off_loc,
+                    pickup_location=row.on_loc,
+
+                    subject_id=name[0],
+                    trial_num=name[1]
+                ))
+            ),
+            axis=1,
+        )
+        .values
+    ).set_index(grp_cols)
+    return windows_df

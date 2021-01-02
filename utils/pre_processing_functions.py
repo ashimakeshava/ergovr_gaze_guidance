@@ -52,7 +52,10 @@ def read_preprocess_save(data_path, save_path):
     samples_df.columns = [col.replace('.','_') for col in samples_df.columns]
     samples_df['timestamp_dt'] = samples_df.timestamp
     samples_df = samples_df.query('timestamp>=0')
-    samples_df.timestamp_dt = pd.to_datetime(samples_df.timestamp_dt, unit='s')
+    samples_df.timestamp_dt = pd.to_datetime(
+            samples_df.timestamp_dt,
+            unit='s', utc=True, origin='unix'
+    )
     shelf_df.fillna(value = {'shape':'Sphere', 'color':'Red',
                             'position.x':0, 'position.y':0, 'trialID':0},
                     inplace = True
@@ -496,6 +499,7 @@ def get_fixation_duration(samples_df):
     samples_df.loc[idx,'isFixV'] = True
     # samples_df.loc[samples_df.query('isFixV==1 and fix_duration<0.1').index, 'isFixV'] = 0
     # recalculate fixation durations
+    s_df_copy.drop(columns='fix_duration', inplace=True)
     samples_df = calculate_fixation_duration(samples_df)
     samples_df['isOutlierFix'] = (samples_df
                               .query('isFixV == 1 and fix_duration != 0')
@@ -543,46 +547,38 @@ def get_fixation_duration(samples_df):
 
     return samples_df
 
+
+
+
 def get_grasp_info(samples_df):
-    samples_df.drop(columns=['timestamp',
-       'leftEye_position_x', 'leftEye_position_y', 'leftEye_position_z',
-       'leftEye_direction_x', 'leftEye_direction_y', 'leftEye_direction_z',
-       'leftEye_raycastHitObject', 'leftEye_raycastHitLocation_x',
-       'leftEye_raycastHitLocation_y', 'leftEye_raycastHitLocation_z',
-       'rightEye_position_x', 'rightEye_position_y', 'rightEye_position_z',
-       'rightEye_direction_x', 'rightEye_direction_y','rightEye_direction_z',
-        'rightEye_raycastHitObject','rightEye_raycastHitLocation_x',
-        'rightEye_raycastHitLocation_y','rightEye_raycastHitLocation_z',
+    samples_df.drop(columns=[
        'head_theta_h', 'head_theta_v', 'head_vel_h',
        'head_vel_v', 'head_acc_h', 'head_acc_v',
         ], inplace=True)
     samples_df.set_index('timestamp_dt', inplace=True)
-    samples_df[['grasp_onset','grasp_stop','grasp_duration']] = (samples_df
+    samples_df['grasp_onset'] = (samples_df
                  .groupby(['subjectID', 'subjectfileName', 'trialNum'], as_index=False)
                  .handData_graspedObject
                  .apply(lambda x: x.groupby((x != x.shift()).cumsum())
-                         .transform(lambda x: [x.index[0],
-                         x.index[-1],
-                         (x.index[-1] - x.index[0])/np.timedelta64(1,'s')
-                         ] )
+                         .transform(lambda x: x.index[0] )
                         )
     ).reset_index().set_index('timestamp_dt').handData_graspedObject
 
-    # samples_df['grasp_stop'] = (samples_df
-    #             .groupby(['subjectID', 'subjectfileName', 'trialNum'], as_index=False)
-    #              .handData_graspedObject
-    #              .apply(lambda x: x.groupby((x != x.shift()).cumsum())
-    #                      .transform(lambda x: x.index[-1])
-    #                     )
-    # ).reset_index().set_index('timestamp_dt').handData_graspedObject
+    samples_df['grasp_stop'] = (samples_df
+                .groupby(['subjectID', 'subjectfileName', 'trialNum'], as_index=False)
+                 .handData_graspedObject
+                 .apply(lambda x: x
+                                .groupby((x != x.shift()).cumsum())
+                                .transform(lambda x: x.index[-1])
+                        )
+    ).reset_index().set_index('timestamp_dt').handData_graspedObject
     #
     # samples_df['grasp_duration'] = (samples_df
     #              .groupby(['subjectID', 'subjectfileName', 'trialNum'], as_index=False)
     #              .handData_graspedObject
     #              .apply(lambda x: x.groupby((x != x.shift()).cumsum())
     #                      .transform(
-    #                      lambda x:
-    #                         (x.index[-1] - x.index[0])/np.timedelta64(1,'s')
+    #                         lambda x: (x.index[-1] - x.index[0])/np.timedelta64(1,'s')
     #                      )
     #                     )
     # ).reset_index().set_index('timestamp_dt').handData_graspedObject
@@ -633,13 +629,13 @@ def get_shelf_centers(meta_data_path):
 def getShelfLoc(grasp, shelf_centers):
     grasp_object = grasp.handData_graspedObject.split('_')[0]
     #     print(grasp_object)
-    shelf_centers = shelf_centers.query('object == @grasp_object')
-    shelf_centers['dist'] = (np.sqrt(
-        (grasp.handData_contactPoint_x - shelf_centers.center_x)**2 +
-        (grasp.handData_contactPoint_y - shelf_centers.center_y)**2 +
-        (grasp.handData_contactPoint_z - shelf_centers.center_z)**2
+    sc = shelf_centers.query('object == @grasp_object')
+    sc['dist'] = (np.sqrt(
+        (grasp.handData_contactPoint_x - sc.center_x)**2 +
+        (grasp.handData_contactPoint_y - sc.center_y)**2 +
+        (grasp.handData_contactPoint_z - sc.center_z)**2
     ))
-    return shelf_centers.loc[shelf_centers.dist.idxmin(),'shelfID']
+    return sc.loc[sc.dist.idxmin(),'shelfID']
 
 def get_pickup_dropoff_loc(samples_df, meta_data_path):
     samples_df['grasp_onset_bool'] = False
@@ -660,25 +656,3 @@ def get_pickup_dropoff_loc(samples_df, meta_data_path):
                             )
 
     return samples_df
-
-def get_epoch_grasp_on(grp, objs_dict, shelf_dict, offset=1):
-    grp = grp.set_index('timestamp_dt')
-    grp['eyeHit'] = grp['eyeHit'].map(objs_dict)
-    grp['grasp'] = grp['grasp'].map(objs_dict)
-    grp['eye_shelfHits'] = grp['eye_shelfHits'].map(shelf_dict)
-    grp['pickup_location'] = grp['pickup_location'].map(shelf_dict)
-#     grp['headHit'] = grp['headHit'].map(objs_dict)
-    graspNum = 0
-    offset = pd.Timedelta(offset, 's')
-    epoched = pd.DataFrame()
-    for i, row in grp.iterrows():
-        if row.grasp_onset_bool == True:
-            graspNum = graspNum + 1
-            tmp = grp.loc[i-offset:i+pd.Timedelta(1, 's')]
-            tmp['targetObjectFix'] = tmp.eyeHit == row.grasp
-            tmp['targetPickUpShelfFix'] = tmp.eye_shelfHits == row.pickup_location
-            tmp['graspNum'] = graspNum
-            tmp['time'] = (tmp.index - i)/np.timedelta64(1,'s')
-            tmp['trialID'] = row.trialID
-            epoched = pd.concat([epoched, tmp], ignore_index=True)
-    return epoched
