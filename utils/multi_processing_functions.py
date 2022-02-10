@@ -63,7 +63,7 @@ def eye_transitions_execution(grp, valid_objs=[], shelf_locs=[], offset=0,):
                         row.on_time - offset, row.current_off_time + offset
                     ),
                     # columns from sample_df required for each epoch
-                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'obj_fix_dur']
+                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'fix_duration']
                 ]
                 .pipe(
                     lambda df: df.assign(
@@ -177,7 +177,7 @@ def eye_transitions_planning(grp, valid_objs = [], shelf_locs = [], offset=0, ):
                         row.prev_off_time + offset, row.on_time
                     ),
                     # columns from sample_df required for each epoch
-                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'obj_fix_dur']
+                    ['trial_type', 'timestamp_dt', 'is_fixation', 'eye_hit', 'fix_duration']
                 ]
                 .pipe(
                     lambda df: df.assign(
@@ -254,6 +254,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
     grp_cols = ['subject_id', 'trial_num', 'trial_type', 'grasp_num']
     sample_df, name = grp
     sample_df = sample_df.sort_values(by='timestamp_dt')
+    # print(name)
 
     grasp_times = (
         sample_df.query('grasp_onset_bool == 1')
@@ -261,18 +262,35 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
         .rename(columns=dict(
             timestamp_dt='on_time',
             pickup_location='on_loc',
-            grasp='grasp_object',
+            grasp='current_TO',
         ))
     )
+
     grasp_times['off_time'] = sample_df.query('grasp_end_bool == 1').timestamp_dt.values
     grasp_times['off_loc'] = sample_df.query('grasp_end_bool == 1').drop_location.values
     grasp_times = grasp_times.sort_values(by='on_time').reset_index(drop=True)
 
-    grasp_times = grasp_times.drop_duplicates(subset = ['on_loc', 'off_loc', 'grasp_object'])
+    grasp_times = grasp_times.drop_duplicates(subset = ['on_loc', 'off_loc', 'current_TO'])
     grasp_times = grasp_times.query('on_loc != off_loc')
+
+    grasp_times['prev_off_time'] = grasp_times['off_time'].shift(1)
+    grasp_times['next_on_time'] = grasp_times['on_time'].shift(-1)
+
+    grasp_times['prev_TO'] = grasp_times['current_TO'].shift(1)
+    grasp_times['next_TO'] = grasp_times['current_TO'].shift(-1)
+
+    grasp_times['prev_TS'] = grasp_times['off_loc'].shift(1)
+    grasp_times['next_TS'] = grasp_times['off_loc'].shift(-1)
+
+    grasp_times['prev_on_loc'] = grasp_times['on_loc'].shift(1)
+    grasp_times['next_on_loc'] = grasp_times['on_loc'].shift(-1)
+
+    grasp_times = grasp_times.dropna(subset=['prev_TO', 'prev_TS', 'next_TO', 'next_TS'])
+
 
     offset_start_pd = pd.Timedelta(offset_start, 's')
     offset_stop_pd = pd.Timedelta(offset_stop, 's')
+
     windows_df = pd.concat(
         grasp_times
         .apply(
@@ -291,10 +309,10 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                     # whether fixation is on grasped object
                     # when the fixation is on `Other` then return np.nan else indicate if the
                     # fixation is on the grasped object or not
-                    target_object_fix=df.eye_hit.apply(
+                    current_TO_fix=df.eye_hit.apply(
                         lambda s: (
                             np.nan if s == 'Other'
-                            else s == row.grasp_object
+                            else s == row.current_TO
                             if not pd.isnull(s)
                             else np.nan
                             )
@@ -304,7 +322,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                     # whether fixation is on target shelf
                     # when the fixation is on any object return np.nan else indicate if the
                     # fixation is on the target shelf where the grasped object is placed
-                    target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                    current_TS_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
                         lambda s_row: (
                             np.nan if s_row.eye_hit != 'Other'
                             and not pd.isnull(s_row.eye_hit)
@@ -315,30 +333,93 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
                         axis=1
                     ),
 
-                    non_target_object_fix=df.eye_hit.apply(
+                     prev_TO_fix=df.eye_hit.apply(
                         lambda s: (
-                            np.nan if s == 'Other'
-                            else s != row.grasp_object
-                            if s != row.grasp_object and not pd.isnull(s)
-                            else False
-                            if s == row.grasp_object and not pd.isnull(s)
+                            np.nan if s == 'Other' or pd.isnull(s)
+                            else s == row.prev_TO
+                            if not pd.isnull(s)
                             else np.nan
                         )
                     ),
-
-                    non_target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                    prev_TS_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
                         lambda s_row: (
-                            np.nan
-                            if s_row.eye_hit != 'Other'
+                            np.nan if s_row.eye_hit != 'Other'
                             and not pd.isnull(s_row.eye_hit)
-                            else s_row.eye_shelf_hit != row.off_loc
-                            if not pd.isnull(s_row.eye_shelf_hit)
-                            and not pd.isnull(s_row.eye_hit)
-                            and s_row.eye_shelf_hit != row.on_loc
+                            else s_row.eye_shelf_hit == row.prev_TS
+                            if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
                             else np.nan
-                        ),
+                            ),
                         axis=1
                     ),
+
+                    next_TO_fix=df.eye_hit.apply(
+                       lambda s: (
+                           np.nan if s == 'Other' or pd.isnull(s)
+                           else s == row.next_TO
+                           if not pd.isnull(s)
+                           else np.nan
+                       )
+                   ),
+
+                   next_TS_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                       lambda s_row: (
+                           np.nan if s_row.eye_hit != 'Other'
+                           and not pd.isnull(s_row.eye_hit)
+                           else s_row.eye_shelf_hit == row.next_TS
+                           if not pd.isnull(s_row.eye_shelf_hit) and not pd.isnull(s_row.eye_hit)
+                           else np.nan
+                           ),
+                       axis=1
+                   ),
+
+                   other_fix = df[['eye_hit', 'eye_shelf_hit']].apply(
+                       lambda s_row: (
+                           True
+                           if (s_row.eye_hit != 'Other'
+                           and not pd.isnull(s_row.eye_hit)
+                           and s_row.eye_hit != row.prev_TO
+                           and s_row.eye_hit != row.current_TO
+                           and s_row.eye_hit != row.next_TO)
+                           or
+                           (s_row.eye_hit == 'Other'
+                           and not pd.isnull(s_row.eye_hit)
+                           and s_row.eye_shelf_hit != row.off_loc
+                           and s_row.eye_shelf_hit != row.prev_TS
+                           and s_row.eye_shelf_hit != row.next_TS
+                           and s_row.eye_shelf_hit != row.next_on_loc
+                           and s_row.eye_shelf_hit != row.prev_on_loc
+                           and s_row.eye_shelf_hit != row.on_loc)
+                           else np.nan
+                           if pd.isnull(s_row.eye_hit)
+                           else False
+                       ),
+                       axis=1
+                   ),
+
+                    # non_target_object_fix=df.eye_hit.apply(
+                    #     lambda s: (
+                    #         np.nan if s == 'Other'
+                    #         else s != row.grasp_object
+                    #         if s != row.grasp_object and not pd.isnull(s)
+                    #         else False
+                    #         if s == row.grasp_object and not pd.isnull(s)
+                    #         else np.nan
+                    #     )
+                    # ),
+                    #
+                    # non_target_shelf_fix=df[['eye_hit', 'eye_shelf_hit']].apply(
+                    #     lambda s_row: (
+                    #         np.nan
+                    #         if s_row.eye_hit != 'Other'
+                    #         and not pd.isnull(s_row.eye_hit)
+                    #         else s_row.eye_shelf_hit != row.off_loc
+                    #         if not pd.isnull(s_row.eye_shelf_hit)
+                    #         and not pd.isnull(s_row.eye_hit)
+                    #         and s_row.eye_shelf_hit != row.on_loc
+                    #         else np.nan
+                    #     ),
+                    #     axis=1
+                    # ),
 
                     # non_target_object_same_color=df.eye_hit.apply(
                     #     lambda s: (
@@ -365,7 +446,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
 
                     # grasp count in the trial
                     grasp_num=row.name,
-                    grasp_object=row.grasp_object,
+                    grasp_object=row.current_TO,
 
                     grasp_time=row.on_time,
                     drop_time=row.off_time,
@@ -407,6 +488,7 @@ def get_epoch_grasp_on(grp, offset_start=0, offset_stop=-4, bin_size=0.25):
         )
         .values
     ).set_index(grp_cols)
+    print(f'num of grasps: {grasp_times.shape}, group: {name}, window: {windows_df.shape}')
     return windows_df
 
 
@@ -417,38 +499,71 @@ def get_avg_fixations_time_binned(grp):
         grasp_df
         .groupby(grp_cols)
         .agg({
-            'target_object_fix': [np.nansum, 'size'],
-            'target_shelf_fix': [np.nansum, 'size'],
-            'non_target_object_fix': np.nansum,
-            # 'non_target_object_same_shape': np.nansum,
-            # 'non_target_object_same_color': np.nansum,
-            'non_target_shelf_fix': np.nansum,
+            'current_TO_fix': [np.nansum, 'size'],
+            'current_TS_fix': [np.nansum, 'size'],
+
+            'prev_TO_fix': np.nansum,
+            'prev_TS_fix': np.nansum,
+
+            'next_TO_fix': np.nansum,
+            'next_TS_fix': np.nansum,
+
+            'other_fix': np.nansum,
+
+            # 'non_target_shelf_fix': np.nansum,
             'proximity_pick': 'mean',
             'proximity_drop': 'mean',
         })
     )
     fix_prop_df.columns = [
-        'target_object_fix_count', 'total_object_fix_count',
-        'target_shelf_fix_count', 'total_shelf_fix_count',
-        'non_target_object_fix_count',
+        'current_TO_fix_count', 'total_object_fix_count',
+        'current_TS_fix_count', 'total_shelf_fix_count',
+        'prev_TO_fix_count', 'prev_TS_fix_count',
+        'next_TO_fix_count', 'next_TS_fix_count',
+        'other_fix_count',
         # 'non_target_object_same_shape_count',
         # 'non_target_object_same_color_count',
-        'non_target_shelf_fix_count',
+        # 'non_target_shelf_fix_count',
         'proximity_pick',
         'proximity_drop',
     ]
-    fix_prop_df['target_object_fix_prop'] = (
-        fix_prop_df.target_object_fix_count / fix_prop_df.total_object_fix_count
+
+    # print(fix_prop_df.loc[(fix_prop_df.total_object_fix_count + fix_prop_df.total_shelf_fix_count)==0, ['total_object_fix_count', 'total_shelf_fix_count', 'other_fix_count']])
+    if fix_prop_df[fix_prop_df.total_object_fix_count == 0].shape[0]>0:
+        fix_prop_df.loc[fix_prop_df.total_object_fix_count == 0, 'total_object_fix_count'] = -1
+
+    if fix_prop_df[fix_prop_df.total_shelf_fix_count == 0].shape[0]>0:
+        fix_prop_df.loc[fix_prop_df.total_shelf_fix_count == 0,'total_shelf_fix_count'] = -1
+
+    # proportion of fixations on current object and shelf
+    fix_prop_df['current_TO_fix_prop'] = (
+        fix_prop_df.current_TO_fix_count / fix_prop_df.total_object_fix_count
     )
-    fix_prop_df['target_shelf_fix_prop'] = (
-        fix_prop_df.target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
+    fix_prop_df['current_TS_fix_prop'] = (
+        fix_prop_df.current_TS_fix_count / fix_prop_df.total_shelf_fix_count
     )
-    fix_prop_df['non_target_object_fix_prop'] = (
-        fix_prop_df.non_target_object_fix_count / fix_prop_df.total_object_fix_count
+    # proportion of fixations on previous object and shelf
+    fix_prop_df['prev_TO_fix_prop'] = (
+        fix_prop_df.prev_TO_fix_count / fix_prop_df.total_object_fix_count
     )
-    fix_prop_df['non_target_shelf_fix_prop'] = (
-        fix_prop_df.non_target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
+    fix_prop_df['prev_TS_fix_prop'] = (
+        fix_prop_df.prev_TS_fix_count / fix_prop_df.total_shelf_fix_count
     )
+    # proportion of fixations on next object and shelf
+    fix_prop_df['next_TO_fix_prop'] = (
+        fix_prop_df.next_TO_fix_count / fix_prop_df.total_object_fix_count
+    )
+    fix_prop_df['next_TS_fix_prop'] = (
+        fix_prop_df.next_TS_fix_count / fix_prop_df.total_shelf_fix_count
+    )
+    # proportion of fixations on others
+    fix_prop_df['other_fix_prop'] = (
+        fix_prop_df.other_fix_count
+        / (fix_prop_df.total_object_fix_count + fix_prop_df.total_shelf_fix_count)
+    )
+    # fix_prop_df['non_target_shelf_fix_prop'] = (
+    #     fix_prop_df.non_target_shelf_fix_count / fix_prop_df.total_shelf_fix_count
+    # )
     # fix_prop_df['non_target_object_same_feature_fix_prop'] = (
     #     (fix_prop_df.non_target_object_same_shape_count
     #     + fix_prop_df.non_target_object_same_color_count)
